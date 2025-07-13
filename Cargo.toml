@@ -1,0 +1,35 @@
+[package]
+name = "hv"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata.wdk.driver-model]
+driver-type = "WDM"
+
+[lib]
+crate-type = ["cdylib"]
+test = false
+
+[build-dependencies]
+wdk-build = "0.3.0"
+
+[dependencies]
+wdk = "0.3.0"       
+wdk-macros = "0.3.0"
+wdk-alloc = "0.3.0" 
+wdk-panic = "0.3.0" 
+wdk-sys = "0.3.0"   
+x86 = "0.52.0"
+static_assertions = "1.1.0"
+x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
+bitfield = "0.19.1"
+
+[features]
+default = []
+nightly = ["wdk/nightly", "wdk-sys/nightly"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
