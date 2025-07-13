@@ -19,7 +19,7 @@ unsafe extern "win64" fn hypercall() -> u64 {
 }
 
 fn main() {
-    println!("hypercall response: {}",unsafe {hypercall()});
+    println!("hypercall response: {}",unsafe {hypercall() as u64});
 }
 ```
 When the hypervisor is running it will return 4919/0x1337 as response
