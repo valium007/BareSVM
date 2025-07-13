@@ -18,7 +18,6 @@ unsafe extern "win64" fn hypercall() -> u64 {
     );
 }
 
-
 fn main() {
     println!("hypercall response: {}",unsafe {hypercall()});
 }
