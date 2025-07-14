@@ -27,8 +27,7 @@ static GLOBAL_ALLOCATOR: WdkAllocator = WdkAllocator;
     registry_path: PUNICODE_STRING,
 ) -> NTSTATUS {
     println!("DriverEntry from Rust!");
-    let result = utils::is_svm_supported();
-    if result == true {
+    if utils::is_svm_supported() == true {
         hv::virtualize();
     }
     driver.DriverUnload = Some(driver_unload);
