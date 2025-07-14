@@ -1,7 +1,6 @@
-
-use wdk::*;
-use wdk_sys::{*,ntddk::*};
 use static_assertions::*;
+use wdk::*;
+use wdk_sys::{ntddk::*, *};
 
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]

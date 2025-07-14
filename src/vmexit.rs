@@ -1,18 +1,16 @@
 use crate::hv::*;
-use crate::vmcb::*;
 use crate::structs::*;
+use crate::vmcb::*;
 use crate::vmmcall::*;
 use core::arch::asm;
 use core::ptr::NonNull;
 use wdk::*;
-
 
 #[unsafe(no_mangle)]
 unsafe extern "win64" fn vmexit_handler(
     mut vcpu: NonNull<vcpu>,
     mut guest_regs: NonNull<guest_regs>,
 ) -> u8 {
-
     let vcpu_ctx = unsafe { vcpu.as_mut() };
     let guest_regs = unsafe { guest_regs.as_mut() };
 
@@ -26,7 +24,7 @@ unsafe extern "win64" fn vmexit_handler(
     match vcpu_ctx.guest_vmcb.control_area.exit_code {
         VMEXIT_VMRUN => vmrun_handler(vcpu_ctx),
         VMEXIT_VMMCALL => {
-            vmmcall_handler(vcpu_ctx,guest_regs);
+            vmmcall_handler(vcpu_ctx, guest_regs);
         }
         _ => {
             println!("if this prints, its over");

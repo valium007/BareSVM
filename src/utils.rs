@@ -1,16 +1,17 @@
+use core::arch::asm;
 use core::ffi::c_void;
-use x86::{cpuid::CpuId, msr::rdmsr};
+use core::sync::atomic::{AtomicU64, Ordering};
 use wdk::*;
 use wdk_sys::ntddk::*;
-use wdk_sys::{PAGE_SIZE,POOL_FLAG_NON_PAGED};
-use core::arch::asm;
-use core::sync::atomic::{AtomicU64, Ordering};
-
+use wdk_sys::{PAGE_SIZE, POOL_FLAG_NON_PAGED};
+use x86::{cpuid::CpuId, msr::rdmsr};
 
 pub fn is_svm_supported() -> bool {
     // Check `CPUID Fn8000_0001_ECX[SVM] == 0`
     //
-    let Some(result) = CpuId::new().get_extended_processor_and_feature_identifiers() else { return false };
+    let Some(result) = CpuId::new().get_extended_processor_and_feature_identifiers() else {
+        return false;
+    };
     if !result.has_svm() {
         println!("Processor does not support SVM");
         return false;
@@ -34,23 +35,19 @@ pub fn is_svm_supported() -> bool {
         .map(|svm_info| svm_info.has_svm_lock())
         .unwrap_or_default()
     {
-        println!(
-            "the user must change a platform firmware setting to enable SVM"
-        );
+        println!("the user must change a platform firmware setting to enable SVM");
     } else {
-        println!(
-            "SVMLock may be unlockable; consult platform firmware or TPM to obtain the key."
-        );
+        println!("SVMLock may be unlockable; consult platform firmware or TPM to obtain the key.");
     }
 
     false
 }
 
 pub fn allocate(size: usize) -> *mut c_void {
-    if(size <= PAGE_SIZE as usize){
+    if (size <= PAGE_SIZE as usize) {
         println!("alloc called with size <= PAGE_SIZE");
     }
-    let addr = unsafe { ExAllocatePool2(POOL_FLAG_NON_PAGED,size as u64,0x64657246) }; // 0x64657246 = derF
+    let addr = unsafe { ExAllocatePool2(POOL_FLAG_NON_PAGED, size as u64, 0x64657246) }; // 0x64657246 = derF
     return addr;
 }
 
@@ -58,12 +55,11 @@ pub fn deallocate(p: *mut c_void) {
     unsafe { ExFreePool(p) };
 }
 
-
 pub fn pa(va: *const core::ffi::c_void) -> u64 {
-        #[allow(clippy::cast_sign_loss)]
-        unsafe {
-            MmGetPhysicalAddress(va.cast_mut()).QuadPart as u64
-        }
+    #[allow(clippy::cast_sign_loss)]
+    unsafe {
+        MmGetPhysicalAddress(va.cast_mut()).QuadPart as u64
+    }
 }
 
 pub fn readcr0() -> u64 {
@@ -79,11 +75,11 @@ pub fn readcr4() -> u64 {
 }
 
 use wdk_sys::{
+    ALL_PROCESSOR_GROUPS, APC_LEVEL, GROUP_AFFINITY, NT_SUCCESS, PAGED_CODE, PROCESSOR_NUMBER,
     ntddk::{
         KeGetCurrentIrql, KeGetProcessorNumberFromIndex, KeQueryActiveProcessorCountEx,
         KeRevertToUserGroupAffinityThread, KeSetSystemGroupAffinityThread, MmGetPhysicalAddress,
     },
-    ALL_PROCESSOR_GROUPS, APC_LEVEL, GROUP_AFFINITY, NT_SUCCESS, PAGED_CODE, PROCESSOR_NUMBER,
 };
 
 pub fn run_on_all_cpus(callback: fn(u32)) {

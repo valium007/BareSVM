@@ -20,9 +20,14 @@ use x86::controlregs::*;
 use x86::msr::{IA32_EFER, IA32_PAT, rdmsr, wrmsr};
 use x86_64::instructions::tables::{sgdt, sidt};
 
+#[unsafe(no_mangle)]
+unsafe extern "win64" {
+    unsafe fn launch_vm(guest_vmcb_pa: *mut u64);
+}
+global_asm!(include_str!("vmlaunch.asm"));
+
 // use this to store which cpu is virtualized
 static VIRTUALIZED_BITSET: AtomicU64 = AtomicU64::new(0);
-
 static mut vcpu_pool: *mut vcpu = null_mut();
 
 fn is_virtualized(idx: u32) -> bool {
@@ -39,13 +44,10 @@ fn set_virtualized(idx: u32) {
 pub struct host_stack_layout {
     pub stack_contents: [u8; STACK_CONTENTS_SIZE],
     pub trap_frame: KTRAP_FRAME,
-
     pub guest_vmcb_pa: u64,
     pub host_vmcb_pa: u64,
-
     pub self_data: *mut u64, // self reference that will point to a vcpu struct
     pub shared_data: *mut u64, // shared_data will be used for msr bitmap in future
-
     pub padding_1: u64,
     pub reserved_1: u64,
 }
@@ -131,12 +133,6 @@ impl vcpu {
     }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "win64" {
-    unsafe fn launch_vm(guest_vmcb_pa: *mut u64);
-}
-global_asm!(include_str!("vmlaunch.asm"));
-
 pub fn virtualize_cpu(idx: u32) {
     // capture context here, when the guest begins execution the guest_rip
     // will point here and the is_virtualized() will return true.
@@ -172,6 +168,51 @@ pub fn virtualize_cpu(idx: u32) {
     println!("virtualized #cpu: {}", idx)
 }
 
+pub fn devirtualize_cpu(vcpu_ctx: &mut vcpu, guest_regs: &mut guest_regs) -> u8 {
+    guest_regs.rax = vcpu_ctx as *mut _ as u32 as u64;
+    guest_regs.rdx = vcpu_ctx as *mut _ as u64 >> 32;
+
+    guest_regs.rbx = vcpu_ctx.guest_vmcb.control_area.n_rip;
+    guest_regs.rcx = vcpu_ctx.guest_vmcb.state_save_area.rsp;
+
+    let guest_vmcb_pa = pa(addr_of!(vcpu_ctx.guest_vmcb) as _);
+
+    unsafe {
+        asm!("vmload rax", in("rax") guest_vmcb_pa);
+
+        asm!("cli");
+        asm!("stgi");
+
+        // Disable svm.
+        let msr = rdmsr(IA32_EFER) & !EFER_SVME;
+        wrmsr(IA32_EFER, msr);
+
+        // Restore guest eflags.
+        asm!("push {}; popfq", in(reg) (*vcpu_ctx).guest_vmcb.state_save_area.rflags);
+    }
+    return 1;
+}
+
+pub fn virtualize() {
+    if setup_resources() == true {
+        run_on_all_cpus(virtualize_cpu)
+    } else {
+        println!("resources allocation failed!")
+    }
+}
+
+pub fn devirtualize() {
+    run_on_all_cpus(|idx| {
+        println!("devirtualizing #cpu {}", idx);
+        unsafe {
+            asm!("mov rcx, 0x10");
+            asm!("vmmcall");
+        }
+    });
+    println!("done!");
+    unsafe { deallocate(vcpu_pool as *mut c_void) };
+}
+
 fn setup_resources() -> bool {
     let cpu_count = unsafe { KeQueryActiveProcessorCount(null_mut()) };
     println!("#cpus: {}", cpu_count);
@@ -185,25 +226,4 @@ fn setup_resources() -> bool {
     };
     println!("allocated vcpu_pool");
     true
-}
-
-pub fn virtualize() {
-    if setup_resources() == true {
-        run_on_all_cpus(virtualize_cpu)
-    } else {
-        println!("resources allocation failed!")
-    }
-}
-
-fn devirtualize_hypercall(idx: u32) {
-    println!("devirtualizing #cpu {}", idx);
-    unsafe {
-        asm!("mov rcx, 0x10");
-        asm!("vmmcall");
-    }
-}
-
-pub fn devirtualize() {
-    run_on_all_cpus(devirtualize_hypercall);
-    unsafe { deallocate(vcpu_pool as *mut c_void) };
 }

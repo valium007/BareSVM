@@ -48,7 +48,7 @@ launch_vm:
 
 guest_loop:
 
-    mov rax, [rsp]          // rax = vcpu_data.host_stack_layout.guest_vmcb_pa
+    mov rax, [rsp]          // rax = vcpu.host_stack_layout.guest_vmcb_pa
 
     vmload rax              // load previous saved guest state from vmcb
 
@@ -61,7 +61,7 @@ guest_loop:
     pushaq
 
     mov rdx, rsp                                                // rdx = guest_registers
-    mov rcx, [rsp + GUEST_REGS_SIZE + KTRAP_FRAME_SIZE + 16]    // rcx = vcpu_data
+    mov rcx, [rsp + GUEST_REGS_SIZE + KTRAP_FRAME_SIZE + 16]    // rcx = vcpu_ctx
 
     sub rsp, 0x20 + 0x60
     movaps [rsp + 0x20], xmm0
@@ -85,9 +85,9 @@ guest_loop:
 
     popaq
 
-    jnz exit_loop               // if (handle_vmexit() != 0 {{ jmp exit_loop }}
-    add rsp, KTRAP_FRAME_SIZE   // else {{ remove trap frame and
-    jmp guest_loop              // continue loop }}
+    jnz exit_loop               
+    add rsp, KTRAP_FRAME_SIZE   
+    jmp guest_loop              
 
 exit_loop:
     mov rsp, rcx        // rsp = host_rsp
