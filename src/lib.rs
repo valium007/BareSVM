@@ -10,13 +10,13 @@ use wdk_alloc::WdkAllocator;
 use wdk_sys::{DRIVER_OBJECT, NTSTATUS, PUNICODE_STRING, STATUS_SUCCESS};
 extern crate wdk_panic;
 
+mod handler;
 mod hv;
 mod segments;
 mod structs;
 mod utils;
 mod vmcb;
 mod vmexit;
-mod vmmcall;
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: WdkAllocator = WdkAllocator;

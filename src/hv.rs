@@ -1,19 +1,17 @@
+extern crate alloc;
 use crate::segments::*;
 use crate::structs::*;
 use crate::utils::*;
 use crate::vmcb::*;
-use core::arch::asm;
-use core::arch::global_asm;
-use core::ffi::c_void;
-use core::ptr::null;
-use core::ptr::null_mut;
-use core::ptr::{NonNull, addr_of};
+use alloc::boxed::Box;
+use core::arch::{asm, global_asm};
+use core::ptr::*;
 use core::sync::atomic::{AtomicU64, Ordering};
 use static_assertions::*;
 use wdk::{dbg_break, println};
 use wdk_sys::{
-    CONTEXT,
-    ntddk::{KeQueryActiveProcessorCount, RtlCaptureContext},
+    ALL_PROCESSOR_GROUPS, APC_LEVEL, CONTEXT, KAFFINITY, NT_SUCCESS, PAGED_CODE,
+    POOL_FLAG_NON_PAGED, PROCESSOR_NUMBER, ntddk::*,
 };
 use x86::bits64::paging::{BASE_PAGE_SIZE, PAddr};
 use x86::controlregs::*;
@@ -28,7 +26,6 @@ global_asm!(include_str!("vmlaunch.asm"));
 
 // use this to store which cpu is virtualized
 static VIRTUALIZED_BITSET: AtomicU64 = AtomicU64::new(0);
-static mut vcpu_pool: *mut vcpu = null_mut();
 
 fn is_virtualized(idx: u32) -> bool {
     let bit = 1 << idx;
@@ -63,17 +60,11 @@ pub struct vcpu {
     pub unload: bool,
 }
 
-const_assert_eq!(
-    core::mem::size_of::<vcpu>(),
-    KERNEL_STACK_SIZE + 4 * BASE_PAGE_SIZE
-);
-
 impl vcpu {
-    pub fn setup_vcpu(&mut self, context: &mut CONTEXT) {
+    pub fn setup_vmcb(&mut self, context: &mut CONTEXT) {
         let gdtr = sgdt();
         let idtr = sidt();
 
-        self.unload = false;
         self.host_stack_layout.guest_vmcb_pa = pa(addr_of!(self.guest_vmcb) as _);
         self.host_stack_layout.host_vmcb_pa = pa(addr_of!(self.host_vmcb) as _);
         self.host_stack_layout.self_data = self as *mut vcpu as *mut u64;
@@ -131,46 +122,59 @@ impl vcpu {
 
         unsafe { asm!("vmsave rax", in("rax") self.host_stack_layout.host_vmcb_pa) };
     }
+
+    pub fn new(context: &mut CONTEXT) -> Box<Self> {
+        let instance = Self {
+            host_stack_layout: host_stack_layout {
+                stack_contents: [0u8; STACK_CONTENTS_SIZE],
+                trap_frame: unsafe { core::mem::zeroed() },
+                guest_vmcb_pa: 0,
+                host_vmcb_pa: 0,
+                self_data: core::ptr::null_mut(),
+                shared_data: core::ptr::null_mut(),
+                padding_1: u64::MAX,
+                reserved_1: u64::MAX,
+            },
+            guest_vmcb: unsafe { core::mem::zeroed() },
+            host_vmcb: unsafe { core::mem::zeroed() },
+            host_state_area: [0u8; BASE_PAGE_SIZE],
+            prev_vmexit: 0,
+            unload: false,
+        };
+        let mut instance = Box::new(instance);
+        instance.setup_vmcb(context);
+        return instance;
+    }
 }
 
-pub fn virtualize_cpu(idx: u32) {
-    // capture context here, when the guest begins execution the guest_rip
-    // will point here and the is_virtualized() will return true.
-
+fn virtualize_cpu(idx: u32) {
     let mut context = CONTEXT::default();
-    unsafe {
-        RtlCaptureContext(&mut context as *mut CONTEXT);
-    }
-
-    let mut vcpu_ptr = unsafe { vcpu_pool.add(idx as usize) };
-
-    if vcpu_ptr.is_null() {
-        println!("#cpu: {} data not found!", idx);
-    }
+    unsafe { RtlCaptureContext(&mut context as *mut CONTEXT) };
 
     if !is_virtualized(idx) {
-        unsafe {
-            wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_SVME);
-        }
-
-        let mut vcpu = unsafe { &mut *vcpu_ptr };
-        vcpu.setup_vcpu(&mut context);
         set_virtualized(idx);
-
-        let host_rsp = &vcpu.host_stack_layout.guest_vmcb_pa as *const u64 as *mut u64;
-
-        unsafe {
-            launch_vm(host_rsp);
-            println!("this should never print!");
-            dbg_break();
-        }
+        enable_svm();
+        let mut vcpu = vcpu::new(&mut context);
+        let host_rsp = &(*vcpu).host_stack_layout.guest_vmcb_pa as *const u64 as *mut u64;
+        unsafe { launch_vm(host_rsp) };
     }
     println!("virtualized #cpu: {}", idx)
 }
 
+pub fn virtualize() {
+    for processor in 0..processor_count() {
+        let Some(executor) = ProcessorExecutor::switch_to_processor(processor) else {
+            return println!("failed to switch to #cpu: {}", processor);
+        };
+
+        virtualize_cpu(processor);
+        core::mem::drop(executor);
+    }
+}
+
 pub fn devirtualize_cpu(vcpu_ctx: &mut vcpu, guest_regs: &mut guest_regs) -> u8 {
-    guest_regs.rax = vcpu_ctx as *mut _ as u32 as u64;
-    guest_regs.rdx = vcpu_ctx as *mut _ as u64 >> 32;
+    guest_regs.rax = vcpu_ctx as *mut _ as u32 as u64; // storing addr of vcpu_ctx
+    guest_regs.rdx = vcpu_ctx as *mut _ as u64 >> 32; // in these two registers
 
     guest_regs.rbx = vcpu_ctx.guest_vmcb.control_area.n_rip;
     guest_regs.rcx = vcpu_ctx.guest_vmcb.state_save_area.rsp;
@@ -179,8 +183,7 @@ pub fn devirtualize_cpu(vcpu_ctx: &mut vcpu, guest_regs: &mut guest_regs) -> u8 
 
     unsafe {
         asm!("vmload rax", in("rax") guest_vmcb_pa);
-
-        asm!("cli");
+        asm!("sti");
         asm!("stgi");
 
         // Disable svm.
@@ -193,37 +196,16 @@ pub fn devirtualize_cpu(vcpu_ctx: &mut vcpu, guest_regs: &mut guest_regs) -> u8 
     return 1;
 }
 
-pub fn virtualize() {
-    if setup_resources() == true {
-        run_on_all_cpus(virtualize_cpu)
-    } else {
-        println!("resources allocation failed!")
-    }
-}
-
 pub fn devirtualize() {
-    run_on_all_cpus(|idx| {
-        println!("devirtualizing #cpu {}", idx);
+    for processor in 0..processor_count() {
+        let Some(executor) = ProcessorExecutor::switch_to_processor(processor) else {
+            return println!("failed to switch to #cpu: {}", processor);
+        };
+
         unsafe {
-            asm!("mov rcx, 0x10");
-            asm!("vmmcall");
+            core::arch::asm!("vmmcall", in("rcx") 0x10, options(nostack, nomem));
         }
-    });
-    println!("done!");
-    unsafe { deallocate(vcpu_pool as *mut c_void) };
-}
-
-fn setup_resources() -> bool {
-    let cpu_count = unsafe { KeQueryActiveProcessorCount(null_mut()) };
-    println!("#cpus: {}", cpu_count);
-
-    unsafe {
-        vcpu_pool = allocate(core::mem::size_of::<vcpu>() * cpu_count as usize) as *mut vcpu;
-        if vcpu_pool.is_null() {
-            println!("vcpu_pool is empty!");
-            return false;
-        }
-    };
-    println!("allocated vcpu_pool");
-    true
+        println!("devirtualized #cpu: {}", processor);
+        core::mem::drop(executor);
+    }
 }

@@ -1,11 +1,12 @@
+use crate::vmcb::EFER_SVME;
 use core::arch::asm;
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicU64, Ordering};
 use wdk::*;
 use wdk_sys::ntddk::*;
-use wdk_sys::{PAGE_SIZE, POOL_FLAG_NON_PAGED};
-use x86::{cpuid::CpuId, msr::rdmsr};
+use wdk_sys::*;
+use x86::{cpuid::CpuId, msr::*};
 
+// credits to https://github.com/not-matthias/amd_hypervisor
 pub fn is_svm_supported() -> bool {
     // Check `CPUID Fn8000_0001_ECX[SVM] == 0`
     //
@@ -43,12 +44,17 @@ pub fn is_svm_supported() -> bool {
     false
 }
 
-pub fn allocate(size: usize) -> *mut c_void {
+pub fn enable_svm() {
+    unsafe { wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_SVME) }
+    println!("enabled svm!");
+}
+
+pub fn allocate<T>(size: usize) -> *mut T {
     if (size <= PAGE_SIZE as usize) {
         println!("alloc called with size <= PAGE_SIZE");
     }
-    let addr = unsafe { ExAllocatePool2(POOL_FLAG_NON_PAGED, size as u64, 0x64657246) }; // 0x64657246 = derF
-    return addr;
+    let ptr = unsafe { ExAllocatePool2(POOL_FLAG_NON_PAGED, size as u64, 0x64657246) as *mut T }; // 0x64657246 = derF
+    return ptr;
 }
 
 pub fn deallocate(p: *mut c_void) {
@@ -74,36 +80,31 @@ pub fn readcr4() -> u64 {
     ret as u64
 }
 
-use wdk_sys::{
-    ALL_PROCESSOR_GROUPS, APC_LEVEL, GROUP_AFFINITY, NT_SUCCESS, PAGED_CODE, PROCESSOR_NUMBER,
-    ntddk::{
-        KeGetCurrentIrql, KeGetProcessorNumberFromIndex, KeQueryActiveProcessorCountEx,
-        KeRevertToUserGroupAffinityThread, KeSetSystemGroupAffinityThread, MmGetPhysicalAddress,
-    },
-};
+//there was a bug in KeRevertToUserGroupAffinityThread
+pub fn processor_count() -> u32 {
+    unsafe { KeQueryActiveProcessorCount(core::ptr::null_mut()) }
+}
 
-pub fn run_on_all_cpus(callback: fn(u32)) {
-    fn processor_count() -> u32 {
-        unsafe { KeQueryActiveProcessorCountEx(u16::try_from(ALL_PROCESSOR_GROUPS).unwrap()) }
+pub struct ProcessorExecutor {
+    old_affinity: KAFFINITY,
+}
+
+impl ProcessorExecutor {
+    pub fn switch_to_processor(i: u32) -> Option<Self> {
+        if i > processor_count() {
+            println!("Invalid processor index: {}", i);
+            return None;
+        }
+        let old_affinity = unsafe { KeSetSystemAffinityThreadEx(1u64 << i) };
+        Some(Self { old_affinity })
     }
+}
 
-    PAGED_CODE!();
-
-    for index in 0..processor_count() {
-        let mut processor_number = PROCESSOR_NUMBER::default();
-        let status = unsafe { KeGetProcessorNumberFromIndex(index, &mut processor_number) };
-        assert!(NT_SUCCESS(status));
-
-        let mut old_affinity = GROUP_AFFINITY::default();
-        let mut affinity = GROUP_AFFINITY {
-            Group: processor_number.Group,
-            Mask: 1 << processor_number.Number,
-            Reserved: [0, 0, 0],
-        };
-        unsafe { KeSetSystemGroupAffinityThread(&mut affinity, &mut old_affinity) };
-
-        callback(index);
-
-        unsafe { KeRevertToUserGroupAffinityThread(&mut old_affinity) };
+impl Drop for ProcessorExecutor {
+    fn drop(&mut self) {
+        println!("Switching execution back to previous processor");
+        unsafe {
+            KeRevertToUserAffinityThreadEx(self.old_affinity);
+        }
     }
 }

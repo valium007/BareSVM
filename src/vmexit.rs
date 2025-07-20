@@ -1,7 +1,7 @@
+use crate::handler::vmmcall::vmmcall_handler;
 use crate::hv::*;
 use crate::structs::*;
 use crate::vmcb::*;
-use crate::vmmcall::*;
 use core::arch::asm;
 use core::ptr::NonNull;
 use wdk::*;
