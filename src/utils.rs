@@ -5,6 +5,8 @@ use wdk::*;
 use wdk_sys::ntddk::*;
 use wdk_sys::*;
 use x86::{cpuid::CpuId, msr::*};
+use x86_64::registers::model_specific::Msr;
+
 
 // credits to https://github.com/not-matthias/amd_hypervisor
 pub fn is_svm_supported() -> bool {
@@ -49,18 +51,6 @@ pub fn enable_svm() {
     println!("enabled svm!");
 }
 
-pub fn allocate<T>(size: usize) -> *mut T {
-    if (size <= PAGE_SIZE as usize) {
-        println!("alloc called with size <= PAGE_SIZE");
-    }
-    let ptr = unsafe { ExAllocatePool2(POOL_FLAG_NON_PAGED, size as u64, 0x64657246) as *mut T }; // 0x64657246 = derF
-    return ptr;
-}
-
-pub fn deallocate(p: *mut c_void) {
-    unsafe { ExFreePool(p) };
-}
-
 pub fn pa(va: *const core::ffi::c_void) -> u64 {
     #[allow(clippy::cast_sign_loss)]
     unsafe {
@@ -68,16 +58,21 @@ pub fn pa(va: *const core::ffi::c_void) -> u64 {
     }
 }
 
-pub fn readcr0() -> u64 {
+pub fn readcr3() -> u64 {
     let ret: usize;
-    unsafe { asm!("mov %cr0, {0}", out(reg) ret, options(att_syntax)) }
+    unsafe { asm!("mov {0}, cr3", out(reg) ret) }
     ret as u64
 }
 
-pub fn readcr4() -> u64 {
-    let ret: usize;
-    unsafe { asm!("mov %cr4, {0}", out(reg) ret, options(att_syntax)) };
-    ret as u64
+#[inline]
+pub unsafe fn rdmsr(msr: u32) -> u64 {
+    let val = Msr::new(msr).read();
+    val
+}
+
+#[inline]
+pub unsafe fn wrmsr(msr: u32, value: u64){
+    Msr::new(msr).write(value);
 }
 
 //there was a bug in KeRevertToUserGroupAffinityThread

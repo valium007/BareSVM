@@ -10,13 +10,12 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use static_assertions::*;
 use wdk::{dbg_break, println};
 use wdk_sys::{
-    ALL_PROCESSOR_GROUPS, APC_LEVEL, CONTEXT, KAFFINITY, NT_SUCCESS, PAGED_CODE,
+    ALL_PROCESSOR_GROUPS, PAGE_SIZE, CONTEXT, KAFFINITY, NT_SUCCESS, PAGED_CODE,
     POOL_FLAG_NON_PAGED, PROCESSOR_NUMBER, ntddk::*,
 };
-use x86::bits64::paging::{BASE_PAGE_SIZE, PAddr};
-use x86::controlregs::*;
-use x86::msr::{IA32_EFER, IA32_PAT, rdmsr, wrmsr};
+use x86::msr::{IA32_EFER, IA32_PAT};
 use x86_64::instructions::tables::{sgdt, sidt};
+use x86_64::registers::control::*;
 
 #[unsafe(no_mangle)]
 unsafe extern "win64" {
@@ -27,13 +26,13 @@ global_asm!(include_str!("vmlaunch.asm"));
 // use this to store which cpu is virtualized
 static VIRTUALIZED_BITSET: AtomicU64 = AtomicU64::new(0);
 
-fn is_virtualized(idx: u32) -> bool {
-    let bit = 1 << idx;
+fn is_virtualized(processor: u32) -> bool {
+    let bit = 1 << processor;
     VIRTUALIZED_BITSET.load(Ordering::Relaxed) & bit != 0
 }
 
-fn set_virtualized(idx: u32) {
-    let bit = 1 << idx;
+fn set_virtualized(processor: u32) {
+    let bit = 1 << processor;
     VIRTUALIZED_BITSET.fetch_or(bit, Ordering::Relaxed);
 }
 
@@ -55,7 +54,7 @@ pub struct vcpu {
     pub host_stack_layout: host_stack_layout,
     pub guest_vmcb: vmcb,
     pub host_vmcb: vmcb,
-    pub host_state_area: [u8; BASE_PAGE_SIZE],
+    pub host_state_area: [u8; PAGE_SIZE as usize],
     pub prev_vmexit: u64,
     pub unload: bool,
 }
@@ -105,10 +104,10 @@ impl vcpu {
         unsafe {
             self.guest_vmcb.state_save_area.efer = rdmsr(IA32_EFER);
             self.guest_vmcb.state_save_area.gpat = rdmsr(IA32_PAT);
-            self.guest_vmcb.state_save_area.cr0 = readcr0();
-            self.guest_vmcb.state_save_area.cr2 = cr2() as _;
-            self.guest_vmcb.state_save_area.cr3 = cr3() as _;
-            self.guest_vmcb.state_save_area.cr4 = readcr4();
+            self.guest_vmcb.state_save_area.cr0 = Cr0::read_raw();
+            self.guest_vmcb.state_save_area.cr2 = Cr2::read_raw();
+            self.guest_vmcb.state_save_area.cr3 = readcr3();
+            self.guest_vmcb.state_save_area.cr4 = Cr4::read_raw();
         }
 
         self.guest_vmcb.state_save_area.rflags = context.EFlags as u64;
@@ -137,7 +136,7 @@ impl vcpu {
             },
             guest_vmcb: unsafe { core::mem::zeroed() },
             host_vmcb: unsafe { core::mem::zeroed() },
-            host_state_area: [0u8; BASE_PAGE_SIZE],
+            host_state_area: [0u8; PAGE_SIZE as usize],
             prev_vmexit: 0,
             unload: false,
         };
@@ -147,18 +146,18 @@ impl vcpu {
     }
 }
 
-fn virtualize_cpu(idx: u32) {
+fn virtualize_cpu(processor: u32) {
     let mut context = CONTEXT::default();
     unsafe { RtlCaptureContext(&mut context as *mut CONTEXT) };
 
-    if !is_virtualized(idx) {
-        set_virtualized(idx);
+    if !is_virtualized(processor) {
+        set_virtualized(processor);
         enable_svm();
         let mut vcpu = vcpu::new(&mut context);
-        let host_rsp = &(*vcpu).host_stack_layout.guest_vmcb_pa as *const u64 as *mut u64;
+        let host_rsp = &vcpu.host_stack_layout.guest_vmcb_pa as *const u64 as *mut u64;
         unsafe { launch_vm(host_rsp) };
     }
-    println!("virtualized #cpu: {}", idx)
+    println!("virtualized #cpu: {}", processor)
 }
 
 pub fn virtualize() {
