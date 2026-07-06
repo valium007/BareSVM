@@ -1,12 +1,13 @@
-use crate::vmcb::EFER_SVME;
-use core::arch::asm;
-use core::ffi::c_void;
+use crate::{dbg, inline::*, msr::IA32_EFER, vmcb::EFER_SVME};
+use core::{arch::asm, ffi::c_void};
+use raw_cpuid::CpuId;
 use wdk::*;
-use wdk_sys::ntddk::*;
-use wdk_sys::*;
-use x86::{cpuid::CpuId, msr::*};
-use x86_64::registers::model_specific::Msr;
+use wdk_sys::{ntddk::*, *};
+use x86_64::registers::{control::Efer, model_specific::Msr};
 
+unsafe extern "win64" {
+    pub fn ZwYieldExecution() -> NTSTATUS;
+}
 
 // credits to https://github.com/not-matthias/amd_hypervisor
 pub fn is_svm_supported() -> bool {
@@ -47,7 +48,7 @@ pub fn is_svm_supported() -> bool {
 }
 
 pub fn enable_svm() {
-    unsafe { wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_SVME) }
+    wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_SVME);
     println!("enabled svm!");
 }
 
@@ -58,24 +59,6 @@ pub fn pa(va: *const core::ffi::c_void) -> u64 {
     }
 }
 
-pub fn readcr3() -> u64 {
-    let ret: usize;
-    unsafe { asm!("mov {0}, cr3", out(reg) ret) }
-    ret as u64
-}
-
-#[inline]
-pub unsafe fn rdmsr(msr: u32) -> u64 {
-    let val = Msr::new(msr).read();
-    val
-}
-
-#[inline]
-pub unsafe fn wrmsr(msr: u32, value: u64){
-    Msr::new(msr).write(value);
-}
-
-//there was a bug in KeRevertToUserGroupAffinityThread
 pub fn processor_count() -> u32 {
     unsafe { KeQueryActiveProcessorCount(core::ptr::null_mut()) }
 }
@@ -87,17 +70,24 @@ pub struct ProcessorExecutor {
 impl ProcessorExecutor {
     pub fn switch_to_processor(i: u32) -> Option<Self> {
         if i > processor_count() {
-            println!("Invalid processor index: {}", i);
+            dbg!("Invalid processor index: {}", i);
             return None;
         }
         let old_affinity = unsafe { KeSetSystemAffinityThreadEx(1u64 << i) };
+
+        unsafe { ZwYieldExecution() };
+
+        let mut cpu = PROCESSOR_NUMBER::default();
+        unsafe { KeGetCurrentProcessorNumberEx(&mut cpu as *mut PROCESSOR_NUMBER) };
+        dbg!("running at processor: {}", cpu.Number);
+
         Some(Self { old_affinity })
     }
 }
 
 impl Drop for ProcessorExecutor {
     fn drop(&mut self) {
-        println!("Switching execution back to previous processor");
+        dbg!("Switching execution back to previous processor");
         unsafe {
             KeRevertToUserAffinityThreadEx(self.old_affinity);
         }

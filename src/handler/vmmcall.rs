@@ -1,25 +1,17 @@
-use crate::hv::vcpu;
-use crate::{structs::*, utils::*, vmcb::*};
+use crate::{hv::vcpu, structs::*, utils::*, vmcb::*, vmexit::ExitType};
 use core::{arch::asm, ptr::addr_of};
 use wdk::*;
-use x86::msr::*;
 
 const VMMCALL_UNLOAD: u64 = 0x10;
 const VMMCALL_MAGIC: u64 = 1;
 
-pub fn vmmcall_handler(vcpu_ctx: &mut vcpu, guest_regs: &mut guest_regs) {
-    println!("vmmcall called with rcx: {}", guest_regs.rcx);
-
-    match guest_regs.rcx {
+pub fn handle(vcpu_ctx: &mut vcpu, regs: &mut guest_regs) -> ExitType {
+    match regs.rcx {
         VMMCALL_MAGIC => {
-            guest_regs.rax = 0x1337;
+            regs.rax = 0x1337;
+            ExitType::IncrementRIP
         }
-        VMMCALL_UNLOAD => {
-            vcpu_ctx.unload = true;
-        }
-        _ => {
-            println!("invalid vmmcall_code");
-            dbg_break();
-        }
+        VMMCALL_UNLOAD => ExitType::Devirtualize,
+        _ => ExitType::Unknown,
     }
 }

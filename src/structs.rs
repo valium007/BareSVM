@@ -5,6 +5,27 @@ use wdk_sys::{ntddk::*, *};
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct guest_regs {
+    // XMM registers (128-bit each)
+    pub xmm0: u128,
+    pub xmm1: u128,
+    pub xmm2: u128,
+    pub xmm3: u128,
+    pub xmm4: u128,
+    pub xmm5: u128,
+    pub xmm6: u128,
+    pub xmm7: u128,
+    pub xmm8: u128,
+    pub xmm9: u128,
+    pub xmm10: u128,
+    pub xmm11: u128,
+    pub xmm12: u128,
+    pub xmm13: u128,
+    pub xmm14: u128,
+    pub xmm15: u128,
+
+    pub padding_8b: u64,
+
+    // GPRs
     pub r15: u64,
     pub r14: u64,
     pub r13: u64,
@@ -13,16 +34,18 @@ pub struct guest_regs {
     pub r10: u64,
     pub r9: u64,
     pub r8: u64,
+    pub rbp: u64,
     pub rdi: u64,
     pub rsi: u64,
-    pub rbp: u64,
-    pub rsp: u64,
-    pub rbx: u64,
     pub rdx: u64,
     pub rcx: u64,
+    pub rbx: u64,
     pub rax: u64,
 }
-const_assert_eq!(core::mem::size_of::<guest_regs>(), 0x80 /* 16 * 0x8 */);
+const_assert_eq!(
+    core::mem::size_of::<guest_regs>(),
+    (15 * core::mem::size_of::<u64>()) + (16 * core::mem::size_of::<u128>()) + 8
+);
 
 // credits to https://github.com/not-matthias/amd_hypervisor
 #[repr(C)]
@@ -162,7 +185,5 @@ pub struct KTRAP_FRAME {
     pub fill_4: u32,
 }
 
-pub const KERNEL_STACK_SIZE: usize = 0x6000;
-pub const STACK_CONTENTS_SIZE: usize = KERNEL_STACK_SIZE
-    - (core::mem::size_of::<*mut u64>() * 6)
-    - core::mem::size_of::<KTRAP_FRAME>();
+pub const KERNEL_STACK_SIZE: usize = 0x1000;
+pub const STACK_CONTENTS_SIZE: usize = KERNEL_STACK_SIZE;
